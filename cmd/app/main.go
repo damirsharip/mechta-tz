@@ -30,13 +30,17 @@ func main() {
 		log.Fatalf("failed to read number of goroutines: %v", err)
 	}
 
-	// Метод 1. Использование буферизированного канала
+	// Метод 1. Использование мьютексов канала
 	totalSumBuffered := SumWithBufferedChan(numOfRoutines, pairs)
 	fmt.Printf("Общая сумма чисел c буферизированным каналом: %d\n", totalSumBuffered)
 
 	// Метод 2. Использование небуферизированного канала
 	totalSumUnbuffered := SumWithUnBufferedChan(numOfRoutines, pairs)
 	fmt.Printf("Общая сумма чисел с не буферизированным каналом: %d\n", totalSumUnbuffered)
+
+	// Метод 3. Использование буферизированного канала
+	totalSumMutex := SumWithMutex(numOfRoutines, pairs)
+	fmt.Printf("Общая сумма чисел c мьютексом: %d\n", totalSumMutex)
 }
 
 type pair struct {
@@ -55,8 +59,6 @@ func SumWithBufferedChan(numOfRoutines int, pairs []pair) int {
 		partSize = 1
 		numOfRoutines = len(pairs)
 	}
-
-	var mu sync.Mutex // создаем мьютекс чтобы асинхронно обновлять totalsum
 
 	// создаем буферизированным канал с кол-во горутин, от которых в дальнейшем будем брать данные
 	resultChan := make(chan int, numOfRoutines)
@@ -79,14 +81,15 @@ func SumWithBufferedChan(numOfRoutines int, pairs []pair) int {
 				sum += pairs[j].A + pairs[j].B
 			}
 			resultChan <- sum
-			mu.Lock()       // Заблокируйем мьютекс перед обновлением totalSum
-			totalSum += sum // меняем totalSum
-			mu.Unlock()     // разблокируем чтобы другие горутины могли писать
 		}(start, end)
 	}
 	// ждем и закрываем канал
 	wg.Wait()
 	close(resultChan)
+
+	for sum := range resultChan {
+		totalSum += sum
+	}
 
 	// возвращаем ответ
 	return totalSum
@@ -145,4 +148,46 @@ func SumWithUnBufferedChan(numOfRoutines int, pairs []pair) int {
 			return totalSum
 		}
 	}
+}
+
+func SumWithMutex(numOfRoutines int, pairs []pair) int {
+	var totalSum int
+
+	// делим общее кол-во элементов на горутины
+	// в случае если у нас много горутин чем элементов, ограничиваем кол-во горутин на len(pairs)
+	// partsize это количество элементов которая каждая горутина должна вычитать в свой sum
+	partSize := len(pairs) / numOfRoutines
+	if partSize == 0 {
+		partSize = 1
+		numOfRoutines = len(pairs)
+	}
+
+	var mu sync.Mutex // создаем мьютекс чтобы асинхронно обновлять totalsum
+
+	// создаем waitgroup, чтобы потом ждать окончания всех записей от горутин
+	var wg sync.WaitGroup
+	for i := 0; i < numOfRoutines; i++ {
+		wg.Add(1)
+		start := i * partSize
+		end := (i + 1) * partSize
+
+		if i == numOfRoutines-1 { // если разделение было не целым числом, то в последнем круге end может быть меньше len(pairs), из за этого его end = len(pairs)
+			end = len(pairs)
+		}
+
+		go func(start, end int) {
+			defer wg.Done()
+			sum := 0
+			for j := start; j < end; j++ {
+				sum += pairs[j].A + pairs[j].B
+			}
+			mu.Lock()       // Заблокируйем мьютекс перед обновлением totalSum
+			totalSum += sum // меняем totalSum
+			mu.Unlock()     // разблокируем чтобы другие горутины могли писать
+		}(start, end)
+	}
+	// ждем
+	wg.Wait()
+	// возвращаем ответ
+	return totalSum
 }
